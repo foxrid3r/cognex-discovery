@@ -3,6 +3,7 @@
 import queue
 import threading
 import tkinter as tk
+from ipaddress import IPv4Address
 from tkinter import messagebox, ttk
 
 from .discovery import (
@@ -13,6 +14,21 @@ from .discovery import (
     hex_dump,
     validate_discovery_settings,
 )
+from .interfaces import get_network_interfaces
+
+AUTOMATIC_INTERFACE = "Automatic (OS default)"
+
+
+def table_sort_key(column: str, value: str) -> tuple:
+    """Sort numbers and IPv4 addresses by value, and text without case."""
+    if column == "number":
+        return (0, int(value))
+    if column in {"ip", "subnet", "gateway"}:
+        try:
+            return (0, int(IPv4Address(value)))
+        except ValueError:
+            return (1, value.casefold())
+    return (0, value.casefold())
 
 
 class CognexDiscoveryApp(tk.Tk):
@@ -29,12 +45,16 @@ class CognexDiscoveryApp(tk.Tk):
         self.discovery_thread = None
 
         self.broadcast_var = tk.StringVar(value=DEFAULT_BROADCAST_IP)
-        self.local_ip_var = tk.StringVar(value="")
+        self.interface_var = tk.StringVar(value=AUTOMATIC_INTERFACE)
+        self.interfaces = {AUTOMATIC_INTERFACE: ""}
+        self.sort_column = "number"
+        self.sort_reverse = False
         self.timeout_var = tk.StringVar(value=str(DEFAULT_TIMEOUT))
         self.status_var = tk.StringVar(value="Ready.")
 
         self._events = queue.Queue()
         self._build_ui()
+        self.refresh_interfaces()
         self.after(50, self._poll_events)
 
     def _build_ui(self) -> None:
@@ -49,11 +69,12 @@ class CognexDiscoveryApp(tk.Tk):
             row=0, column=1, padx=(5, 15)
         )
 
-        ttk.Label(controls, text="Local IP:").grid(row=0, column=2, sticky="w")
+        ttk.Label(controls, text="Network adapter:").grid(row=0, column=2, sticky="w")
 
-        ttk.Entry(controls, textvariable=self.local_ip_var, width=18).grid(
-            row=0, column=3, padx=(5, 15)
+        self.interface_combo = ttk.Combobox(
+            controls, textvariable=self.interface_var, width=32, state="readonly"
         )
+        self.interface_combo.grid(row=0, column=3, padx=(5, 15))
 
         ttk.Label(controls, text="Timeout (s):").grid(row=0, column=4, sticky="w")
 
@@ -70,9 +91,12 @@ class CognexDiscoveryApp(tk.Tk):
             row=0, column=7, padx=(8, 0)
         )
 
+        ttk.Button(
+            controls, text="Refresh adapters", command=self.refresh_interfaces
+        ).grid(row=1, column=0, columnspan=2, pady=(8, 0), sticky="w")
         ttk.Label(
-            controls, text="Leave Local IP blank to let the OS choose the adapter."
-        ).grid(row=1, column=0, columnspan=8, pady=(8, 0), sticky="w")
+            controls, text="Select an adapter and IPv4 address, or use Automatic."
+        ).grid(row=1, column=2, columnspan=6, pady=(8, 0), sticky="w")
 
         # Main split pane
 
@@ -85,6 +109,7 @@ class CognexDiscoveryApp(tk.Tk):
         paned.add(top_frame, weight=3)
 
         columns = (
+            "number",
             "name",
             "model",
             "system",
@@ -100,7 +125,8 @@ class CognexDiscoveryApp(tk.Tk):
             top_frame, columns=columns, show="headings", selectmode="browse"
         )
 
-        headings = {
+        self.headings = {
+            "number": "Number",
             "name": "Device Name",
             "model": "Model",
             "system": "System Name",
@@ -113,6 +139,7 @@ class CognexDiscoveryApp(tk.Tk):
         }
 
         widths = {
+            "number": 70,
             "name": 160,
             "model": 100,
             "system": 170,
@@ -125,8 +152,12 @@ class CognexDiscoveryApp(tk.Tk):
         }
 
         for col in columns:
-            self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], minwidth=80, anchor="w")
+            self.tree.heading(
+                col,
+                text=self.headings[col],
+                command=lambda column=col: self.sort_table(column),
+            )
+            self.tree.column(col, width=widths[col], minwidth=60, anchor="w")
 
         tree_scroll_y = ttk.Scrollbar(
             top_frame, orient="vertical", command=self.tree.yview
@@ -204,6 +235,39 @@ class CognexDiscoveryApp(tk.Tk):
 
     # UI actions
 
+    def refresh_interfaces(self) -> None:
+        """Refresh addresses while preserving a selection that still exists."""
+        try:
+            interfaces = {AUTOMATIC_INTERFACE: "", **get_network_interfaces()}
+        except OSError as exc:
+            messagebox.showerror(
+                "Network adapters", f"Could not list adapters:\n\n{exc}"
+            )
+            return
+        previous = self.interface_var.get()
+        self.interfaces = interfaces
+        self.interface_combo.configure(values=list(interfaces))
+        if previous not in interfaces:
+            self.interface_var.set(AUTOMATIC_INTERFACE)
+
+    def sort_table(self, column: str, toggle: bool = True) -> None:
+        """Reorder rows without changing their device IDs or selection."""
+        if toggle:
+            self.sort_reverse = (
+                not self.sort_reverse if column == self.sort_column else False
+            )
+        self.sort_column = column
+        rows = sorted(
+            self.tree.get_children(),
+            key=lambda item: table_sort_key(column, self.tree.set(item, column)),
+            reverse=self.sort_reverse,
+        )
+        for position, item in enumerate(rows):
+            self.tree.move(item, "", position)
+        for name, title in self.headings.items():
+            arrow = (" ▼" if self.sort_reverse else " ▲") if name == column else ""
+            self.tree.heading(name, text=title + arrow)
+
     def set_status_threadsafe(self, text: str) -> None:
         """Queue worker updates; only the main thread may call Tk APIs."""
         self._events.put(("status", text))
@@ -228,7 +292,7 @@ class CognexDiscoveryApp(tk.Tk):
             return
 
         broadcast_ip = self.broadcast_var.get().strip()
-        local_ip = self.local_ip_var.get().strip()
+        local_ip = self.interfaces[self.interface_var.get()]
 
         try:
             timeout_seconds = float(self.timeout_var.get().strip())
@@ -276,6 +340,7 @@ class CognexDiscoveryApp(tk.Tk):
                 "end",
                 iid=str(index),
                 values=(
+                    index + 1,
                     device.device_name,
                     device.device_model,
                     device.system_name,
@@ -288,6 +353,7 @@ class CognexDiscoveryApp(tk.Tk):
                 ),
             )
 
+        self.sort_table(self.sort_column, toggle=False)
         self.discover_button.configure(state="normal")
 
         count = len(devices)

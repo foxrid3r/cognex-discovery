@@ -7,6 +7,8 @@ alongside the original response bytes.
 ## Features
 
 - Discover devices using a configurable broadcast address and local interface.
+- Select a network adapter by name and IPv4 address, and refresh the adapter list.
+- Sort numbered device rows by clicking any column header.
 - View device names, models, firmware, serial numbers, MAC and IP addresses.
 - Inspect subnet, gateway, DNS, domain, and a hexadecimal packet dump.
 - Keep the interface responsive while discovery runs in a background thread.
@@ -18,7 +20,8 @@ alongside the original response bytes.
 - A graphical desktop to run the application.
 - Network access to the devices and permission for UDP traffic on port 1069.
 
-The application has no third-party runtime Python dependencies. Tkinter is a
+The application uses psutil to enumerate network adapters (installed by pip).
+Tkinter is a
 Python/OS component; it cannot be installed through this project's pip extras.
 Run `python -m tkinter` to check availability. On Debian/Ubuntu, the package is
 typically `python3-tk`; Windows Python installations can include Tcl/Tk support.
@@ -41,10 +44,13 @@ installed `cognex-discovery` command also opens the application.
 
 1. Leave **Broadcast IP** at `255.255.255.255`, or enter the broadcast address
    appropriate to your subnet.
-2. Leave **Local IP** blank for the OS-selected interface. On a computer with
-   multiple adapters, enter the IPv4 address assigned to the desired adapter.
+2. Choose a **Network adapter** by name and IPv4 address, or leave **Automatic**
+   selected for the OS-selected interface. Use **Refresh adapters** after network
+   changes. Adapters with multiple IPv4 addresses have an entry for each address.
 3. Choose a positive, finite **Timeout (s)** and click **Discover Devices**.
 4. Select a result to inspect **Parsed Details** and **Raw Response**.
+5. Click a column header to sort; click again to reverse the order. **Number**
+   records the original discovery order and stays with its device when sorted.
 
 Results appear when the scan finishes. Replies are deduplicated by MAC address,
 falling back to IP address. **Clear** clears the displayed results; it does not
@@ -107,6 +113,7 @@ and Linux with Python 3.10 and 3.14.
 src/cognex_discovery/
     discovery.py     Data model, packet parsing, and UDP discovery
     app.py           Tkinter interface and main-thread event handling
+    interfaces.py    Network-adapter enumeration
     __main__.py      Module launcher
 tests/              Parser, socket, and worker regression tests
 pyproject.toml      Package metadata and development tools
