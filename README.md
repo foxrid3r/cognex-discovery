@@ -12,6 +12,7 @@ alongside the original response bytes.
 - View device names, models, firmware, serial numbers, MAC and IP addresses.
 - Inspect subnet, gateway, DNS, domain, and a hexadecimal packet dump.
 - Keep the interface responsive while discovery runs in a background thread.
+- Download the entire FTP root from selected cameras into Device Name folders.
 - Use the discovery and parser functions independently of the GUI.
 
 ## Requirements
@@ -56,6 +57,45 @@ cancel an active scan.
 If no devices appear, check the selected adapter, subnet, device power, and
 firewall rules. Broadcast discovery usually stays within the local broadcast
 domain. VPNs and multiple network adapters can affect routing.
+
+## Download camera files
+
+1. Discover cameras, then use Ctrl-click or Shift-click to select camera rows.
+2. Click **Download selected cameras** and choose a local destination folder.
+3. Use **FTPS (explicit TLS, port 21)** for servers that require encryption. Certificate
+   verification is disabled by default to support camera self-signed certificates.
+   FTPS still encrypts the connection, but server identity is not verified.
+   Enable **Verify server certificate** to validate the server certificate.
+   Choose plain **FTP** only for cameras that require it.
+4. Leave the username at `admin` and the password empty, or enter different
+   credentials. Credentials apply to all cameras in this batch and are not saved.
+5. Click **Download**. The **Downloads** tab shows the current file and each
+   camera's result; the progress bar counts processed cameras, including failures.
+
+Each camera is copied recursively from its FTP root (`/`), preserving its
+subfolders and binary file contents. A folder named after **Device Name** is
+created or reused in the destination. Each backup is saved inside it in a local-time
+`YYYY-MM-DD_HH-MM-SS` subfolder, for example
+`Line 1 Camera/2026-10-15_14-30-05/`. Characters invalid in Windows camera folder
+names are replaced; unnamed cameras use their IP address. Backups made within the
+same second get numbered suffixes such as `2026-10-15_14-30-05 (2)`, so earlier
+backups are preserved. Cameras with identical Device Names share the parent
+folder but always get separate backup subfolders.
+
+Transfers run sequentially in the background. A camera failure is reported and
+the next camera is attempted. **Cancel download** stops the batch; completed
+files are kept and incomplete files are removed. Cancellation can wait for the
+current network operation to time out (10 seconds). Closing during a download
+requests cancellation; close again after it finishes.
+
+FTP uses port 21 and passive transfers, bound to the selected network adapter
+when one is specified. FTPS encrypts both login and data transfers and never
+falls back to unencrypted FTP automatically. Plain FTP is unencrypted. The application only reads camera
+files; it does not upload, delete, or configure anything on the camera. Directory
+listing uses MLSD with an NLST/CWD fallback for older servers. Unsupported file
+names, entry types, inaccessible paths, or directory loops are reported as a
+camera failure; consult the log before treating a backup as complete. Real camera
+FTP compatibility still needs verification on your hardware.
 
 ## Python API
 
@@ -111,8 +151,9 @@ src/cognex_discovery/
     discovery.py     Data model, packet parsing, and UDP discovery
     app.py           PySide6 interface and main-thread event handling
     interfaces.py    Network-adapter enumeration
+    ftp_download.py  Recursive FTP copying and local folder handling
     __main__.py      Module launcher
-tests/              Parser, socket, and worker regression tests
+tests/              Parser, socket, FTP, and GUI regression tests
 pyproject.toml      Package metadata and development tools
 ```
 

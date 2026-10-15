@@ -4,19 +4,27 @@ import queue
 import sys
 import threading
 from ipaddress import IPv4Address
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -34,6 +42,7 @@ from .discovery import (
     hex_dump,
     validate_discovery_settings,
 )
+from .ftp_download import download_camera
 from .interfaces import get_network_interfaces
 
 AUTOMATIC_INTERFACE = "Automatic (OS default)"
@@ -95,6 +104,10 @@ class CognexDiscoveryApp(QMainWindow):
         self.setMinimumSize(960, 600)
         self.devices = []
         self.discovery_thread = None
+        self.download_thread = None
+        self._download_active = False
+        self._download_cancel = threading.Event()
+        self.download_destination = ""
         self.interfaces = {AUTOMATIC_INTERFACE: ""}
         self._events = queue.Queue()
         self._build_ui()
@@ -152,16 +165,19 @@ class CognexDiscoveryApp(QMainWindow):
         self.discover_button = QPushButton("Discover Devices")
         self.discover_button.clicked.connect(self.start_discovery)
         controls.addWidget(self.discover_button, 1, 4)
-        clear_button = QPushButton("Clear")
-        clear_button.clicked.connect(self.clear_devices)
-        controls.addWidget(clear_button, 1, 5)
+        self.clear_button = QPushButton("Clear")
+        self.clear_button.clicked.connect(self.clear_devices)
+        controls.addWidget(self.clear_button, 1, 5)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         layout.addWidget(splitter)
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(HEADINGS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setToolTip(
+            "Use Ctrl-click or Shift-click to select multiple cameras."
+        )
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().hide()
         for index, width in enumerate(
@@ -184,7 +200,27 @@ class CognexDiscoveryApp(QMainWindow):
             editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
             self.notebook.addTab(editor, title)
         splitter.addWidget(self.notebook)
+        self.transfer_log = QPlainTextEdit()
+        self.transfer_log.setReadOnly(True)
+        self.notebook.addTab(self.transfer_log, "Downloads")
         splitter.setSizes([390, 260])
+        downloads = QHBoxLayout()
+        self.download_button = QPushButton("Download selected cameras…")
+        self.download_button.setEnabled(False)
+        self.download_button.clicked.connect(self.configure_download)
+        downloads.addWidget(self.download_button)
+        self.download_progress = QProgressBar()
+        self.download_progress.setRange(0, 1)
+        self.download_progress.setValue(0)
+        self.download_progress.setFormat("%v / %m cameras")
+        self.download_progress.setMaximumWidth(220)
+        downloads.addWidget(self.download_progress)
+        self.cancel_download_button = QPushButton("Cancel download")
+        self.cancel_download_button.setEnabled(False)
+        self.cancel_download_button.clicked.connect(self.cancel_download)
+        downloads.addWidget(self.cancel_download_button)
+        downloads.addStretch()
+        layout.addLayout(downloads)
         self.statusBar().showMessage("Ready.")
 
     def refresh_interfaces(self) -> None:
@@ -216,12 +252,21 @@ class CognexDiscoveryApp(QMainWindow):
                     self.statusBar().showMessage(payload)
                 elif kind == "finished":
                     self.finish_discovery(payload)
+                elif kind == "download_log":
+                    self.transfer_log.appendPlainText(payload)
+                    self.statusBar().showMessage(payload)
+                elif kind == "download_progress":
+                    self.download_progress.setValue(payload)
+                elif kind == "download_finished":
+                    self._finish_download(payload)
                 else:
                     self.discovery_failed(payload)
         except queue.Empty:
             pass
 
     def start_discovery(self) -> None:
+        if self._download_active:
+            return
         if self.discovery_thread is not None and self.discovery_thread.is_alive():
             return
         broadcast_ip = self.broadcast_edit.text().strip()
@@ -233,6 +278,7 @@ class CognexDiscoveryApp(QMainWindow):
             QMessageBox.critical(self, "Invalid discovery settings", str(exc))
             return
         self.clear_devices()
+        self.download_button.setEnabled(False)
         self.discover_button.setEnabled(False)
         self.statusBar().showMessage("Discovering...")
         self.discovery_thread = threading.Thread(
@@ -306,6 +352,9 @@ class CognexDiscoveryApp(QMainWindow):
         QMessageBox.critical(self, "Cognex Discovery", message)
 
     def clear_devices(self) -> None:
+        if self._download_active:
+            return
+        self.download_button.setEnabled(False)
         self.devices = []
         self.table.setRowCount(0)
         self.details_text.clear()
@@ -313,6 +362,9 @@ class CognexDiscoveryApp(QMainWindow):
         self.statusBar().showMessage("Ready.")
 
     def on_device_selected(self) -> None:
+        selected = self.selected_devices()
+        self.download_button.setEnabled(bool(selected) and not self._download_active)
+        self.download_button.setText(f"Download selected cameras ({len(selected)})…")
         row = self.table.currentRow()
         if row < 0 or not self.table.selectedItems():
             return
@@ -340,6 +392,212 @@ class CognexDiscoveryApp(QMainWindow):
 
         self.details_text.setPlainText(details)
         self.raw_text.setPlainText(hex_dump(device.raw_data))
+
+    def selected_devices(self) -> list[CognexDevice]:
+        """Resolve sorted rows through their original device IDs."""
+        return [
+            self.devices[self.table.item(index.row(), 0).data(Qt.ItemDataRole.UserRole)]
+            for index in self.table.selectionModel().selectedRows()
+            if self.table.item(index.row(), 0) is not None
+        ]
+
+    def configure_download(self) -> None:
+        devices = self.selected_devices()
+        if not devices or self._download_active:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Download camera files")
+        form = QFormLayout(dialog)
+        form.addRow(QLabel(f"Copy the entire FTP root from {len(devices)} camera(s)."))
+        username = QLineEdit("admin")
+        password = QLineEdit()
+        password.setEchoMode(QLineEdit.EchoMode.Password)
+        password.setPlaceholderText("Empty password")
+        protocol = QComboBox()
+        protocol.addItems(
+            ["FTPS (explicit TLS, port 21)", "FTP (unencrypted, port 21)"]
+        )
+        verify_certificate = QCheckBox("Verify server certificate")
+        verify_certificate.setChecked(False)
+        verify_certificate.setToolTip(
+            "Disable only for a known camera with a self-signed certificate. "
+            "Encryption remains enabled, but server identity is not verified."
+        )
+        protocol.currentIndexChanged.connect(
+            lambda index: verify_certificate.setEnabled(index == 0)
+        )
+        destination = QLineEdit(self.download_destination)
+        browse = QPushButton("Browse…")
+
+        def choose_folder():
+            folder = QFileDialog.getExistingDirectory(
+                dialog, "Download destination", destination.text()
+            )
+            if folder:
+                destination.setText(folder)
+
+        browse.clicked.connect(choose_folder)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(destination)
+        folder_row.addWidget(browse)
+        form.addRow("Connection:", protocol)
+        form.addRow("", verify_certificate)
+        form.addRow("Username:", username)
+        form.addRow("Password:", password)
+        form.addRow("Save to:", folder_row)
+        note = QLabel(
+            "Backups are saved under Device Name / YYYY-MM-DD_HH-MM-SS (local time). "
+            "Earlier backups are kept. FTPS encrypts logins and file transfers."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Download")
+        buttons.rejected.connect(dialog.reject)
+
+        def accept():
+            if (
+                not username.text().strip()
+                or not Path(destination.text()).is_dir()
+                or not destination.text().strip()
+            ):
+                QMessageBox.warning(
+                    dialog,
+                    "Download settings",
+                    "Enter a username and choose an existing destination folder.",
+                )
+                return
+            dialog.accept()
+
+        buttons.accepted.connect(accept)
+        form.addRow(buttons)
+        dialog.resize(560, dialog.sizeHint().height())
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.download_destination = destination.text()
+            self.start_download(
+                devices,
+                Path(destination.text()),
+                username.text(),
+                password.text(),
+                use_tls=protocol.currentIndex() == 0,
+                verify_certificate=verify_certificate.isChecked(),
+            )
+
+    def start_download(
+        self,
+        devices,
+        destination: Path,
+        username="admin",
+        password="",
+        *,
+        use_tls=True,
+        verify_certificate=False,
+    ) -> None:
+        if self._download_active or not devices:
+            return
+        self._download_active = True
+        self._download_cancel.clear()
+        self.download_button.setEnabled(False)
+        self.discover_button.setEnabled(False)
+        self.clear_button.setEnabled(False)
+        self.cancel_download_button.setEnabled(True)
+        self.transfer_log.clear()
+        self.notebook.setCurrentWidget(self.transfer_log)
+        self.download_progress.setRange(0, len(devices))
+        self.download_progress.setValue(0)
+        source_ip = self.interfaces[self.interface_combo.currentText()]
+        self.download_thread = threading.Thread(
+            target=self._download_worker,
+            args=(
+                list(devices),
+                destination,
+                username,
+                password,
+                source_ip,
+                use_tls,
+                verify_certificate,
+            ),
+            daemon=True,
+        )
+        self.download_thread.start()
+
+    def _download_worker(
+        self,
+        devices,
+        destination,
+        username,
+        password,
+        source_ip,
+        use_tls=True,
+        verify_certificate=False,
+    ) -> None:
+        completed = failed = 0
+        try:
+            for index, device in enumerate(devices):
+                if self._download_cancel.is_set():
+                    break
+                result = download_camera(
+                    device,
+                    destination,
+                    self._download_cancel,
+                    lambda text: self._events.put(("download_log", text)),
+                    username=username,
+                    password=password,
+                    source_ip=source_ip,
+                    use_tls=use_tls,
+                    verify_certificate=verify_certificate,
+                )
+                label = device.device_name or device.ip_address
+                if result.cancelled:
+                    message = (
+                        f"{label}: cancelled; {result.files} completed files kept."
+                    )
+                elif result.error:
+                    failed += 1
+                    message = f"{label}: FAILED: {result.error} ({result.files} completed files kept)."
+                else:
+                    completed += 1
+                    message = f"{label}: complete, {result.files} files, {result.bytes_copied:,} bytes."
+                self._events.put(("download_log", message))
+                self._events.put(("download_progress", index + 1))
+                if result.cancelled:
+                    break
+        except Exception as exc:
+            failed += 1
+            self._events.put(("download_log", f"Download failed: {exc}"))
+        finally:
+            state = "Cancelled" if self._download_cancel.is_set() else "Finished"
+            self._events.put(
+                (
+                    "download_finished",
+                    f"{state}: {completed} cameras downloaded, {failed} failed.",
+                )
+            )
+
+    def _finish_download(self, message: str) -> None:
+        self._download_active = False
+        self.discover_button.setEnabled(True)
+        self.clear_button.setEnabled(True)
+        self.cancel_download_button.setEnabled(False)
+        self.download_button.setEnabled(bool(self.selected_devices()))
+        self.transfer_log.appendPlainText(message)
+        self.statusBar().showMessage(message)
+
+    def cancel_download(self) -> None:
+        self._download_cancel.set()
+        self.cancel_download_button.setEnabled(False)
+        self.statusBar().showMessage(
+            "Cancelling download; waiting for the current network operation…"
+        )
+
+    def closeEvent(self, event) -> None:
+        if self._download_active:
+            self.cancel_download()
+            event.ignore()
+        else:
+            super().closeEvent(event)
 
 
 def main() -> None:

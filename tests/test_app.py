@@ -91,6 +91,57 @@ class TableAndAdapterTests(unittest.TestCase):
         self.assertEqual(self.window.details_text.toPlainText(), "")
         self.assertEqual(self.window.raw_text.toPlainText(), "")
 
+    def test_download_selection_tracks_devices_after_sorting(self):
+        from PySide6.QtCore import QItemSelectionModel
+
+        devices = [
+            CognexDevice(device_name="Z Camera"),
+            CognexDevice(device_name="A Camera"),
+        ]
+        self.window.finish_discovery(devices)
+        self.window.table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        selection = self.window.table.selectionModel()
+        selection.clearSelection()
+        selection.select(
+            self.window.table.model().index(0, 0),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self.assertEqual(self.window.selected_devices(), [devices[1]])
+        selection.select(
+            self.window.table.model().index(1, 0),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self.assertEqual(len(self.window.selected_devices()), 2)
+
+    def test_download_failure_continues_to_next_camera_and_releases_busy_state(self):
+        from pathlib import Path
+
+        from cognex_discovery.ftp_download import DownloadResult
+
+        devices = [CognexDevice(device_name="One"), CognexDevice(device_name="Two")]
+        self.window.finish_discovery(devices)
+        with patch(
+            "cognex_discovery.app.download_camera",
+            side_effect=[
+                DownloadResult(devices[0], error="Login failed"),
+                DownloadResult(devices[1], files=3, bytes_copied=42),
+            ],
+        ) as download:
+            self.window.start_download(devices, Path("."))
+            self.assertFalse(self.window.discover_button.isEnabled())
+            self.assertFalse(self.window.clear_button.isEnabled())
+            self.window.download_thread.join(timeout=2)
+        self.window._poll_events()
+        self.assertEqual(download.call_count, 2)
+        self.assertFalse(self.window._download_active)
+        self.assertTrue(self.window.discover_button.isEnabled())
+        self.assertTrue(self.window.download_button.isEnabled())
+        self.assertIn(
+            "1 cameras downloaded, 1 failed", self.window.transfer_log.toPlainText()
+        )
+
     def test_invalid_settings_do_not_start_worker(self):
         self.window.timeout_edit.setText("nan")
         with patch("cognex_discovery.app.QMessageBox.critical") as error:
