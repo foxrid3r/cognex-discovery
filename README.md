@@ -4,6 +4,8 @@ A small Python desktop application for discovering Cognex devices on a local
 IPv4 network. It sends a UDP discovery request and displays device information
 alongside the original response bytes.
 
+![Cognex Discovery showing discovered devices and the selected device's parsed details](docs/screenshots/cognex_discovery_main.png)
+
 ## Features
 
 - Discover devices using a configurable broadcast address and local interface.
@@ -54,6 +56,11 @@ Results appear when the scan finishes. Replies are deduplicated by MAC address,
 falling back to IP address. **Clear** clears the displayed results; it does not
 cancel an active scan.
 
+The **Raw Response** tab shows the selected device's original discovery reply as
+a hexadecimal and ASCII dump.
+
+![Raw Response tab showing a selected device's discovery packet](docs/screenshots/cognex_discovery_raw.png)
+
 If no devices appear, check the selected adapter, subnet, device power, and
 firewall rules. Broadcast discovery usually stays within the local broadcast
 domain. VPNs and multiple network adapters can affect routing.
@@ -71,6 +78,11 @@ domain. VPNs and multiple network adapters can affect routing.
    credentials. Credentials apply to all cameras in this batch and are not saved.
 5. Click **Download**. The **Downloads** tab shows the current file and each
    camera's result; the progress bar counts processed cameras, including failures.
+
+The **Downloads** tab displays transfer activity while the selected cameras are
+backed up.
+
+![Downloads tab showing camera file transfers, batch progress, and the Cancel download button](docs/screenshots/cognex_discovery_download.png)
 
 Each camera is copied recursively from its FTP root (`/`), preserving its
 subfolders and binary file contents. A folder named after **Device Name** is
