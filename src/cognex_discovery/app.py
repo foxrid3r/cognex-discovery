@@ -1,10 +1,30 @@
-"""Tkinter interface for Cognex network discovery."""
+"""PySide6 interface for Cognex network discovery."""
 
 import queue
+import sys
 import threading
-import tkinter as tk
 from ipaddress import IPv4Address
-from tkinter import messagebox, ttk
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFontDatabase
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QComboBox,
+    QGridLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .discovery import (
     DEFAULT_BROADCAST_IP,
@@ -17,6 +37,30 @@ from .discovery import (
 from .interfaces import get_network_interfaces
 
 AUTOMATIC_INTERFACE = "Automatic (OS default)"
+COLUMNS = (
+    "number",
+    "name",
+    "model",
+    "system",
+    "ip",
+    "mac",
+    "serial",
+    "firmware",
+    "subnet",
+    "gateway",
+)
+HEADINGS = (
+    "Number",
+    "Device Name",
+    "Model",
+    "System Name",
+    "IP Address",
+    "MAC Address",
+    "Serial Number",
+    "Firmware",
+    "Subnet",
+    "Gateway",
+)
 
 
 def table_sort_key(column: str, value: str) -> tuple:
@@ -31,286 +75,171 @@ def table_sort_key(column: str, value: str) -> tuple:
     return (0, value.casefold())
 
 
-class CognexDiscoveryApp(tk.Tk):
-    """Display discovery results without blocking the Tk event loop."""
+class DeviceTableItem(QTableWidgetItem):
+    """Keep numeric and address ordering when Qt sorts a column."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        column = COLUMNS[self.column()]
+        return table_sort_key(column, self.text()) < table_sort_key(
+            column, other.text()
+        )
+
+
+class CognexDiscoveryApp(QMainWindow):
+    """Display discovery results while network work runs in a daemon thread."""
 
     def __init__(self) -> None:
         super().__init__()
-
-        self.title("Cognex Network Discovery")
-        self.geometry("1220x720")
-        self.minsize(960, 600)
-
+        self.setWindowTitle("Cognex Network Discovery")
+        self.resize(1220, 720)
+        self.setMinimumSize(960, 600)
         self.devices = []
         self.discovery_thread = None
-
-        self.broadcast_var = tk.StringVar(value=DEFAULT_BROADCAST_IP)
-        self.interface_var = tk.StringVar(value=AUTOMATIC_INTERFACE)
         self.interfaces = {AUTOMATIC_INTERFACE: ""}
-        self.sort_column = "number"
-        self.sort_reverse = False
-        self.timeout_var = tk.StringVar(value=str(DEFAULT_TIMEOUT))
-        self.status_var = tk.StringVar(value="Ready.")
-
         self._events = queue.Queue()
         self._build_ui()
         self.refresh_interfaces()
-        self.after(50, self._poll_events)
+        # The worker only touches the queue; Qt widgets stay on the GUI thread.
+        self.event_timer = QTimer(self)
+        self.event_timer.timeout.connect(self._poll_events)
+        self.event_timer.start(50)
 
     def _build_ui(self) -> None:
-        # Controls
-
-        controls = ttk.Frame(self, padding=10)
-        controls.pack(fill="x")
-
-        ttk.Label(controls, text="Broadcast IP:").grid(row=0, column=0, sticky="w")
-
-        ttk.Entry(controls, textvariable=self.broadcast_var, width=18).grid(
-            row=0, column=1, padx=(5, 15)
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        controls = QGridLayout()
+        controls.setHorizontalSpacing(12)
+        controls.setVerticalSpacing(4)
+        controls.setColumnStretch(6, 1)
+        layout.addLayout(controls)
+        self.broadcast_edit = QLineEdit(DEFAULT_BROADCAST_IP)
+        address_width = (
+            self.broadcast_edit.fontMetrics().horizontalAdvance("255.255.255.255") + 32
         )
-
-        ttk.Label(controls, text="Network adapter:").grid(row=0, column=2, sticky="w")
-
-        self.interface_combo = ttk.Combobox(
-            controls, textvariable=self.interface_var, width=32, state="readonly"
+        self.broadcast_edit.setFixedWidth(address_width)
+        self.interface_combo = QComboBox()
+        # Long adapter names must not force the window or other controls wider.
+        self.interface_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self.interface_combo.grid(row=0, column=3, padx=(5, 15))
-
-        ttk.Label(controls, text="Timeout (s):").grid(row=0, column=4, sticky="w")
-
-        ttk.Entry(controls, textvariable=self.timeout_var, width=8).grid(
-            row=0, column=5, padx=(5, 15)
+        self.interface_combo.setMinimumContentsLength(24)
+        self.interface_combo.setFixedWidth(
+            self.interface_combo.fontMetrics().horizontalAdvance("M" * 32) + 32
         )
-
-        self.discover_button = ttk.Button(
-            controls, text="Discover Devices", command=self.start_discovery
+        self.interface_combo.setToolTip(
+            "Select an adapter and IPv4 address, or use Automatic."
         )
-        self.discover_button.grid(row=0, column=6)
-
-        ttk.Button(controls, text="Clear", command=self.clear_devices).grid(
-            row=0, column=7, padx=(8, 0)
+        self.timeout_edit = QLineEdit(str(DEFAULT_TIMEOUT))
+        self.timeout_edit.setFixedWidth(
+            self.timeout_edit.fontMetrics().horizontalAdvance("0000.00") + 24
         )
+        for column, (title, widget) in enumerate(
+            [
+                ("Broadcast IP:", self.broadcast_edit),
+                ("Network adapter:", self.interface_combo),
+                ("Timeout (s):", self.timeout_edit),
+            ]
+        ):
+            label = QLabel(title)
+            label.setBuddy(widget)
+            controls.addWidget(label, 0, column)
+            controls.addWidget(widget, 1, column)
 
-        ttk.Button(
-            controls, text="Refresh adapters", command=self.refresh_interfaces
-        ).grid(row=1, column=0, columnspan=2, pady=(8, 0), sticky="w")
-        ttk.Label(
-            controls, text="Select an adapter and IPv4 address, or use Automatic."
-        ).grid(row=1, column=2, columnspan=6, pady=(8, 0), sticky="w")
+        refresh_button = QPushButton("Refresh adapters")
+        refresh_button.clicked.connect(self.refresh_interfaces)
+        controls.addWidget(refresh_button, 1, 3)
+        self.discover_button = QPushButton("Discover Devices")
+        self.discover_button.clicked.connect(self.start_discovery)
+        controls.addWidget(self.discover_button, 1, 4)
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(self.clear_devices)
+        controls.addWidget(clear_button, 1, 5)
 
-        # Main split pane
-
-        paned = ttk.Panedwindow(self, orient=tk.VERTICAL)
-        paned.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-
-        # Device table
-
-        top_frame = ttk.Frame(paned)
-        paned.add(top_frame, weight=3)
-
-        columns = (
-            "number",
-            "name",
-            "model",
-            "system",
-            "ip",
-            "mac",
-            "serial",
-            "firmware",
-            "subnet",
-            "gateway",
-        )
-
-        self.tree = ttk.Treeview(
-            top_frame, columns=columns, show="headings", selectmode="browse"
-        )
-
-        self.headings = {
-            "number": "Number",
-            "name": "Device Name",
-            "model": "Model",
-            "system": "System Name",
-            "ip": "IP Address",
-            "mac": "MAC Address",
-            "serial": "Serial Number",
-            "firmware": "Firmware",
-            "subnet": "Subnet",
-            "gateway": "Gateway",
-        }
-
-        widths = {
-            "number": 70,
-            "name": 160,
-            "model": 100,
-            "system": 170,
-            "ip": 115,
-            "mac": 145,
-            "serial": 145,
-            "firmware": 115,
-            "subnet": 115,
-            "gateway": 115,
-        }
-
-        for col in columns:
-            self.tree.heading(
-                col,
-                text=self.headings[col],
-                command=lambda column=col: self.sort_table(column),
-            )
-            self.tree.column(col, width=widths[col], minwidth=60, anchor="w")
-
-        tree_scroll_y = ttk.Scrollbar(
-            top_frame, orient="vertical", command=self.tree.yview
-        )
-
-        tree_scroll_x = ttk.Scrollbar(
-            top_frame, orient="horizontal", command=self.tree.xview
-        )
-
-        self.tree.configure(
-            yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set
-        )
-
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        tree_scroll_y.grid(row=0, column=1, sticky="ns")
-        tree_scroll_x.grid(row=1, column=0, sticky="ew")
-
-        top_frame.rowconfigure(0, weight=1)
-        top_frame.columnconfigure(0, weight=1)
-
-        self.tree.bind("<<TreeviewSelect>>", self.on_device_selected)
-
-        # Details notebook
-
-        bottom_frame = ttk.Frame(paned)
-        paned.add(bottom_frame, weight=2)
-
-        self.notebook = ttk.Notebook(bottom_frame)
-        self.notebook.pack(fill="both", expand=True)
-
-        # Parsed details
-        parsed_tab = ttk.Frame(self.notebook)
-        self.notebook.add(parsed_tab, text="Parsed Details")
-
-        self.details_text = tk.Text(
-            parsed_tab, wrap="none", height=12, font=("Consolas", 10)
-        )
-        self.details_text.pack(fill="both", expand=True)
-
-        # Raw packet
-        raw_tab = ttk.Frame(self.notebook)
-        self.notebook.add(raw_tab, text="Raw Response")
-
-        self.raw_text = tk.Text(raw_tab, wrap="none", height=12, font=("Consolas", 10))
-
-        raw_scroll_y = ttk.Scrollbar(
-            raw_tab, orient="vertical", command=self.raw_text.yview
-        )
-
-        raw_scroll_x = ttk.Scrollbar(
-            raw_tab, orient="horizontal", command=self.raw_text.xview
-        )
-
-        self.raw_text.configure(
-            yscrollcommand=raw_scroll_y.set, xscrollcommand=raw_scroll_x.set
-        )
-
-        self.raw_text.grid(row=0, column=0, sticky="nsew")
-        raw_scroll_y.grid(row=0, column=1, sticky="ns")
-        raw_scroll_x.grid(row=1, column=0, sticky="ew")
-
-        raw_tab.rowconfigure(0, weight=1)
-        raw_tab.columnconfigure(0, weight=1)
-
-        # Status bar
-
-        status_bar = ttk.Label(
-            self,
-            textvariable=self.status_var,
-            relief="sunken",
-            anchor="w",
-            padding=(6, 3),
-        )
-        status_bar.pack(fill="x", side="bottom")
-
-    # UI actions
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        layout.addWidget(splitter)
+        self.table = QTableWidget(0, len(COLUMNS))
+        self.table.setHorizontalHeaderLabels(HEADINGS)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().hide()
+        for index, width in enumerate(
+            [70, 160, 100, 170, 115, 145, 145, 115, 115, 115]
+        ):
+            self.table.setColumnWidth(index, width)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+        self.table.itemSelectionChanged.connect(self.on_device_selected)
+        splitter.addWidget(self.table)
+        self.notebook = QTabWidget()
+        self.details_text = QPlainTextEdit()
+        self.raw_text = QPlainTextEdit()
+        for title, editor in [
+            ("Parsed Details", self.details_text),
+            ("Raw Response", self.raw_text),
+        ]:
+            editor.setReadOnly(True)
+            editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+            editor.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+            self.notebook.addTab(editor, title)
+        splitter.addWidget(self.notebook)
+        splitter.setSizes([390, 260])
+        self.statusBar().showMessage("Ready.")
 
     def refresh_interfaces(self) -> None:
         """Refresh addresses while preserving a selection that still exists."""
         try:
             interfaces = {AUTOMATIC_INTERFACE: "", **get_network_interfaces()}
         except OSError as exc:
-            messagebox.showerror(
-                "Network adapters", f"Could not list adapters:\n\n{exc}"
+            QMessageBox.critical(
+                self, "Network adapters", f"Could not list adapters:\n\n{exc}"
             )
             return
-        previous = self.interface_var.get()
+        previous = self.interface_combo.currentText()
         self.interfaces = interfaces
-        self.interface_combo.configure(values=list(interfaces))
-        if previous not in interfaces:
-            self.interface_var.set(AUTOMATIC_INTERFACE)
-
-    def sort_table(self, column: str, toggle: bool = True) -> None:
-        """Reorder rows without changing their device IDs or selection."""
-        if toggle:
-            self.sort_reverse = (
-                not self.sort_reverse if column == self.sort_column else False
-            )
-        self.sort_column = column
-        rows = sorted(
-            self.tree.get_children(),
-            key=lambda item: table_sort_key(column, self.tree.set(item, column)),
-            reverse=self.sort_reverse,
+        self.interface_combo.clear()
+        self.interface_combo.addItems(list(interfaces))
+        self.interface_combo.setCurrentText(
+            previous if previous in interfaces else AUTOMATIC_INTERFACE
         )
-        for position, item in enumerate(rows):
-            self.tree.move(item, "", position)
-        for name, title in self.headings.items():
-            arrow = (" ▼" if self.sort_reverse else " ▲") if name == column else ""
-            self.tree.heading(name, text=title + arrow)
 
     def set_status_threadsafe(self, text: str) -> None:
-        """Queue worker updates; only the main thread may call Tk APIs."""
+        """Queue worker updates for delivery on the GUI thread."""
         self._events.put(("status", text))
 
     def _poll_events(self) -> None:
-        """Apply queued worker messages from the Tk event loop."""
         try:
             while True:
                 kind, payload = self._events.get_nowait()
                 if kind == "status":
-                    self.status_var.set(payload)
+                    self.statusBar().showMessage(payload)
                 elif kind == "finished":
                     self.finish_discovery(payload)
                 else:
                     self.discovery_failed(payload)
         except queue.Empty:
             pass
-        self.after(50, self._poll_events)
 
     def start_discovery(self) -> None:
         if self.discovery_thread is not None and self.discovery_thread.is_alive():
             return
-
-        broadcast_ip = self.broadcast_var.get().strip()
-        local_ip = self.interfaces[self.interface_var.get()]
-
+        broadcast_ip = self.broadcast_edit.text().strip()
+        local_ip = self.interfaces[self.interface_combo.currentText()]
         try:
-            timeout_seconds = float(self.timeout_var.get().strip())
+            timeout_seconds = float(self.timeout_edit.text().strip())
             validate_discovery_settings(broadcast_ip, local_ip, timeout_seconds)
         except ValueError as exc:
-            messagebox.showerror("Invalid discovery settings", str(exc))
+            QMessageBox.critical(self, "Invalid discovery settings", str(exc))
             return
-
         self.clear_devices()
-        self.discover_button.configure(state="disabled")
-        self.status_var.set("Discovering...")
-
+        self.discover_button.setEnabled(False)
+        self.statusBar().showMessage("Discovering...")
         self.discovery_thread = threading.Thread(
             target=self._discovery_worker,
             args=(broadcast_ip, local_ip, timeout_seconds),
             daemon=True,
         )
-
         self.discovery_thread.start()
 
     def _discovery_worker(
@@ -332,72 +261,65 @@ class CognexDiscoveryApp(tk.Tk):
             self._events.put(("error", f"Discovery failed:\n\n{exc}"))
 
     def finish_discovery(self, devices: list[CognexDevice]) -> None:
+        self.clear_devices()
         self.devices = devices
-
+        header = self.table.horizontalHeader()
+        sort_column, sort_order = (
+            header.sortIndicatorSection(),
+            header.sortIndicatorOrder(),
+        )
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(devices))
         for index, device in enumerate(devices):
-            self.tree.insert(
-                "",
-                "end",
-                iid=str(index),
-                values=(
-                    index + 1,
-                    device.device_name,
-                    device.device_model,
-                    device.system_name,
-                    device.ip_address,
-                    device.mac_address,
-                    device.serial_number,
-                    device.firmware_version,
-                    device.subnet,
-                    device.gateway,
-                ),
+            values = (
+                index + 1,
+                device.device_name,
+                device.device_model,
+                device.system_name,
+                device.ip_address,
+                device.mac_address,
+                device.serial_number,
+                device.firmware_version,
+                device.subnet,
+                device.gateway,
             )
-
-        self.sort_table(self.sort_column, toggle=False)
-        self.discover_button.configure(state="normal")
-
+            for column, value in enumerate(values):
+                item = DeviceTableItem(str(value))
+                item.setData(Qt.ItemDataRole.UserRole, index)
+                self.table.setItem(index, column, item)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(sort_column, sort_order)
+        self.discover_button.setEnabled(True)
         count = len(devices)
-
-        if count == 1:
-            self.status_var.set("Discovery complete: 1 device found.")
-        else:
-            self.status_var.set(f"Discovery complete: {count} devices found.")
-
+        noun = "device" if count == 1 else "devices"
+        self.statusBar().showMessage(f"Discovery complete: {count} {noun} found.")
         if devices:
-            self.tree.selection_set("0")
-            self.tree.focus("0")
-            self.on_device_selected()
+            # Select the first discovered device even when the table is sorted.
+            for row in range(count):
+                if self.table.item(row, 0).data(Qt.ItemDataRole.UserRole) == 0:
+                    self.table.selectRow(row)
+                    break
 
     def discovery_failed(self, message: str) -> None:
-        self.discover_button.configure(state="normal")
-        self.status_var.set("Discovery failed.")
-
-        messagebox.showerror("Cognex Discovery", message)
+        self.discover_button.setEnabled(True)
+        self.statusBar().showMessage("Discovery failed.")
+        QMessageBox.critical(self, "Cognex Discovery", message)
 
     def clear_devices(self) -> None:
         self.devices = []
+        self.table.setRowCount(0)
+        self.details_text.clear()
+        self.raw_text.clear()
+        self.statusBar().showMessage("Ready.")
 
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
-        self.details_text.delete("1.0", "end")
-        self.raw_text.delete("1.0", "end")
-
-        self.status_var.set("Ready.")
-
-    def on_device_selected(self, event: tk.Event | None = None) -> None:
-        selection = self.tree.selection()
-
-        if not selection:
+    def on_device_selected(self) -> None:
+        row = self.table.currentRow()
+        if row < 0 or not self.table.selectedItems():
             return
-
-        index = int(selection[0])
-
+        index = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         if not (0 <= index < len(self.devices)):
             return
-
         device = self.devices[index]
-
         details = (
             f"Device Name:       {device.device_name}\n"
             f"Device Model:      {device.device_model}\n"
@@ -416,14 +338,13 @@ class CognexDiscoveryApp(tk.Tk):
             f"Response Length:   {len(device.raw_data)} bytes\n"
         )
 
-        self.details_text.delete("1.0", "end")
-        self.details_text.insert("1.0", details)
-
-        self.raw_text.delete("1.0", "end")
-        self.raw_text.insert("1.0", hex_dump(device.raw_data))
+        self.details_text.setPlainText(details)
+        self.raw_text.setPlainText(hex_dump(device.raw_data))
 
 
 def main() -> None:
     """Launch the desktop application."""
-    app = CognexDiscoveryApp()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    window = CognexDiscoveryApp()
+    window.show()
+    sys.exit(app.exec())

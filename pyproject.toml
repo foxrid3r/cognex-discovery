@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognex-discovery"
-version = "0.1.0"
-description = "A Tkinter desktop tool for discovering Cognex devices over UDP"
+version = "0.2.0"
+description = "A PySide6 desktop tool for discovering Cognex devices over UDP"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["psutil>=5.9"]
-keywords = ["cognex", "discovery", "udp", "tkinter", "machine-vision"]
+dependencies = ["psutil>=5.9", "PySide6>=6.8"]
+keywords = ["cognex", "discovery", "udp", "pyside6", "machine-vision"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",

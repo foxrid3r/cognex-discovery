@@ -16,15 +16,12 @@ alongside the original response bytes.
 
 ## Requirements
 
-- Python 3.10 or newer, with Tkinter available.
+- Python 3.10 or newer.
 - A graphical desktop to run the application.
 - Network access to the devices and permission for UDP traffic on port 1069.
 
-The application uses psutil to enumerate network adapters (installed by pip).
-Tkinter is a
-Python/OS component; it cannot be installed through this project's pip extras.
-Run `python -m tkinter` to check availability. On Debian/Ubuntu, the package is
-typically `python3-tk`; Windows Python installations can include Tcl/Tk support.
+The application uses PySide6 for the desktop interface and psutil to enumerate
+network adapters. Both are installed automatically by pip.
 
 ## Install and run
 
@@ -78,7 +75,7 @@ for device in devices:
 This function blocks for the scan and invokes callbacks in the calling thread.
 Invalid settings raise `ValueError`; socket failures propagate as `OSError`.
 `parse_cognex_response(data, source_ip="", source_port=0)` parses saved bytes
-without network access. Importing the package does not import Tkinter.
+without network access. Importing the package does not import PySide6.
 
 ## Protocol scope and limitations
 
@@ -112,7 +109,7 @@ and Linux with Python 3.10 and 3.14.
 ```text
 src/cognex_discovery/
     discovery.py     Data model, packet parsing, and UDP discovery
-    app.py           Tkinter interface and main-thread event handling
+    app.py           PySide6 interface and main-thread event handling
     interfaces.py    Network-adapter enumeration
     __main__.py      Module launcher
 tests/              Parser, socket, and worker regression tests
