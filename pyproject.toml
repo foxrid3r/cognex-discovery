@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognex-discovery"
-version = "0.3.0"
+version = "0.3.1"
 description = "A PySide6 desktop tool for discovering Cognex devices over UDP"
 readme = "README.md"
 requires-python = ">=3.10"

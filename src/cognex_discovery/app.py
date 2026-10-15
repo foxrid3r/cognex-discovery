@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -187,6 +188,8 @@ class CognexDiscoveryApp(QMainWindow):
         self.table.setSortingEnabled(True)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
         self.table.itemSelectionChanged.connect(self.on_device_selected)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_cell_menu)
         splitter.addWidget(self.table)
         self.notebook = QTabWidget()
         self.details_text = QPlainTextEdit()
@@ -222,6 +225,17 @@ class CognexDiscoveryApp(QMainWindow):
         downloads.addStretch()
         layout.addLayout(downloads)
         self.statusBar().showMessage("Ready.")
+
+    def show_cell_menu(self, position) -> None:
+        """Copy the clicked cell, independent of the current row selection."""
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        text = item.text()
+        menu = QMenu(self.table)
+        copy_action = menu.addAction("Copy")
+        copy_action.triggered.connect(lambda: QApplication.clipboard().setText(text))
+        menu.exec(self.table.viewport().mapToGlobal(position))
 
     def refresh_interfaces(self) -> None:
         """Refresh addresses while preserving a selection that still exists."""
