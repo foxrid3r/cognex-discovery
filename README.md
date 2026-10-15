@@ -133,6 +133,46 @@ use synthetic packets and mocked sockets. No device configuration is changed.
 
 This is an independent utility and is not an official Cognex SDK.
 
+## Build a Windows executable
+
+Run these commands on Windows from the repository root (Python 3.10 or newer):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[build]"
+.\tools\release\build.ps1
+```
+
+The release artifact is `dist/CognexDiscovery-v<version>-windows-<arch>.zip`
+(for example, `CognexDiscovery-v0.3.2-windows-x64.zip`), ready to upload to a GitHub
+Release. The ZIP contains a versioned folder with `CognexDiscovery.exe` and this
+README. Extract it and run the executable; Python is not required on the target
+computer. The executable has no console window and retains the application icon.
+Version comes from `pyproject.toml`; architecture comes from the built executable.
+
+The unpackaged executable stays in `build/executable/`. Every executable build
+also packages the ZIP, replacing only the archive for that version and architecture.
+Older release archives are kept. Python wheel/source package builds remain separate
+(`python -m build`); upload the Windows ZIP as the desktop release asset.
+The build script stops on errors and can be run from any working directory.
+To use a different virtual environment:
+
+```powershell
+.\tools\release\build.ps1 -Python C:\path\to\venv\Scripts\python.exe
+```
+
+The window and executable both use
+`src/cognex_discovery/assets/cognex-discovery.ico`. The icon is included in Python
+packages and in the executable so it also works after installation. Its editable
+SVG source is beside it. After editing the SVG, regenerate the ICO before building:
+
+```powershell
+.\.venv\Scripts\python.exe tools/generate_icon.py
+```
+
+This generates seven icon sizes from 16 to 256 pixels. The PyInstaller spec and
+launcher are in `tools/release/`; intermediate build files stay under `build/`.
+
 ## Development
 
 ```console

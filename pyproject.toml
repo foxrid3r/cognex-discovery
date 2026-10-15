@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognex-discovery"
-version = "0.3.1"
+version = "0.3.2"
 description = "A PySide6 desktop tool for discovering Cognex devices over UDP"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,9 +19,13 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "ruff>=0.9"]
+build = ["pyinstaller>=6.16"]
 
 [project.gui-scripts]
 cognex-discovery = "cognex_discovery.app:main"
+
+[tool.setuptools.package-data]
+cognex_discovery = ["assets/*.ico", "assets/*.svg"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

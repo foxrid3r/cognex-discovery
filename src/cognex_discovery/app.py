@@ -7,7 +7,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFontDatabase
+from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -45,6 +45,8 @@ from .discovery import (
 )
 from .ftp_download import download_camera
 from .interfaces import get_network_interfaces
+
+APP_ICON = Path(__file__).resolve().parent / "assets/cognex-discovery.ico"
 
 AUTOMATIC_INTERFACE = "Automatic (OS default)"
 COLUMNS = (
@@ -101,6 +103,7 @@ class CognexDiscoveryApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Cognex Network Discovery")
+        self.setWindowIcon(QIcon(str(APP_ICON)))
         self.resize(1220, 720)
         self.setMinimumSize(960, 600)
         self.devices = []
@@ -616,7 +619,14 @@ class CognexDiscoveryApp(QMainWindow):
 
 def main() -> None:
     """Launch the desktop application."""
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "CognexDiscovery.Desktop"
+        )
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(APP_ICON)))
     window = CognexDiscoveryApp()
     window.show()
     sys.exit(app.exec())
