@@ -184,7 +184,7 @@ class DownloadTests(unittest.TestCase):
         previous.mkdir()
         (previous / "job.bin").write_bytes(b"old")
         result = self.download(FakeFTP())
-        self.assertEqual(result.folder.parent, previous)
+        self.assertTrue(result.folder.parent.samefile(previous))
         self.assertRegex(result.folder.name, r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$")
         self.assertEqual((previous / "job.bin").read_bytes(), b"old")
 
